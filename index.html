@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>DeepNote風 リアルタイム文字起こし & Gem連携</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap');
+        
+        body {
+            font-family: 'Noto Sans JP', sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            -webkit-tap-highlight-color: transparent;
+            overscroll-behavior-y: none;
+        }
+
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.05); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+
+        .wave-container { display: flex; align-items: center; justify-content: center; gap: 4px; height: 60px; }
+        .wave-bar {
+            width: 6px; background-color: #10b981; border-radius: 3px; height: 4px; transition: height 0.1s ease;
+        }
+
+        @keyframes pulse-red {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+        .recording-dot { animation: pulse-red 2s infinite; }
+        
+        .glass-panel {
+            background: rgba(31, 41, 55, 0.7); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col overflow-hidden">
+
+    <!-- アプリメイン画面 -->
+    <div class="flex-1 flex flex-col max-w-md mx-auto w-full relative">
+        
+        <!-- ヘッダー -->
+        <header class="flex justify-between items-center p-4">
+            <button id="resetBtn" class="text-gray-400 p-2 hover:bg-gray-800 rounded-full transition hidden">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+            </button>
+            <div id="statusIndicator" class="flex items-center text-xs font-medium px-3 py-1 bg-gray-800 rounded-full text-gray-400">
+                <span id="statusDot" class="w-2 h-2 rounded-full bg-gray-500 mr-2"></span>
+                <span id="statusText">待機中</span>
+            </div>
+            <button class="text-gray-400 p-2 hover:bg-gray-800 rounded-full transition">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"></path></svg>
+            </button>
+        </header>
+
+        <!-- タイマー表示 -->
+        <div class="flex flex-col items-center justify-center mt-4 mb-2">
+            <h1 id="timerDisplay" class="text-7xl font-light tracking-widest text-white tabular-nums">00:00</h1>
+            <div class="mt-4 flex items-center bg-gray-800/80 rounded-full px-4 py-1.5 border border-gray-700">
+                <svg class="w-4 h-4 mr-2 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                <span id="modeText" class="text-sm text-gray-300">文字起こし・録音準備完了</span>
+            </div>
+        </div>
+
+        <!-- 音声波形ビジュアライザ -->
+        <div class="wave-container my-4" id="visualizer">
+            <div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div>
+            <div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div>
+            <div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div><div class="wave-bar"></div>
+        </div>
+
+        <!-- 文字起こしテキストエリア -->
+        <div class="flex-1 px-4 pb-4 overflow-hidden flex flex-col">
+            <div class="glass-panel rounded-2xl p-4 flex-1 flex flex-col shadow-lg overflow-hidden relative">
+                <div id="unsupportedWarning" class="hidden absolute inset-0 bg-red-900/90 z-50 flex flex-col items-center justify-center p-6 text-center">
+                    <svg class="w-12 h-12 text-red-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                    <p class="font-bold text-lg mb-2">未対応ブラウザ</p>
+                    <p class="text-sm text-red-200">お使いのブラウザは音声認識機能をサポートしていません。Chrome、Safari等の最新版をご利用ください。</p>
+                </div>
+
+                <div class="flex items-center text-sm text-gray-400 mb-3 pb-2 border-b border-gray-700">
+                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path></svg>
+                    ライブ文字起こし
+                </div>
+                
+                <div id="transcriptArea" class="flex-1 overflow-y-auto text-base leading-relaxed text-gray-100 space-y-2">
+                    <p id="placeholderText" class="text-gray-500 text-center mt-10 text-sm">画面下部の録音ボタンを押して話し始めてください</p>
+                    <div id="finalText" class="whitespace-pre-wrap"></div>
+                    <div id="interimText" class="text-gray-400 italic"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- コントロールパネル -->
+        <div class="bg-gray-900 p-4 border-t border-gray-800 pb-safe">
+            <div id="tagButtons" class="flex space-x-2 mb-4 opacity-50 pointer-events-none transition-opacity duration-300">
+                <button onclick="insertTag('【決定】')" class="flex-1 bg-gray-800 border border-emerald-500/30 text-emerald-400 py-2 rounded-lg text-xs font-medium hover:bg-gray-700 transition">決定</button>
+                <button onclick="insertTag('【TODO】')" class="flex-1 bg-gray-800 border border-blue-500/30 text-blue-400 py-2 rounded-lg text-xs font-medium hover:bg-gray-700 transition">TODO</button>
+                <button onclick="insertTag('【重要】')" class="flex-1 bg-gray-800 border border-orange-500/30 text-orange-400 py-2 rounded-lg text-xs font-medium hover:bg-gray-700 transition">重要</button>
+            </div>
+
+            <div class="flex space-x-3 items-center justify-center relative">
+                <button id="startBtn" class="w-16 h-16 bg-red-600 rounded-full flex items-center justify-center shadow-lg shadow-red-600/30 hover:bg-red-500 transition transform active:scale-90">
+                    <svg class="w-8 h-8 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd"></path></svg>
+                </button>
+
+                <button id="minutesBtn" class="hidden w-full bg-indigo-600 hover:bg-indigo-500 py-4 rounded-xl flex justify-center items-center font-bold transition shadow-lg shadow-indigo-600/30 text-white active:scale-95">
+                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                    議事録を作成
+                </button>
+
+                <div id="recordingControls" class="flex w-full space-x-3 hidden">
+                    <button id="pauseBtn" class="flex-1 bg-gray-700 hover:bg-gray-600 py-4 rounded-xl flex justify-center items-center transition text-white font-medium active:scale-95">
+                        <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                        <span id="pauseText">一時停止</span>
+                    </button>
+                    <button id="stopBtn" class="flex-1 bg-red-600 hover:bg-red-700 py-4 rounded-xl flex justify-center items-center font-bold transition shadow-lg shadow-red-600/20 text-white active:scale-95">
+                        <div class="w-3 h-3 bg-white mr-2 rounded-sm"></div>
+                        完了
+                    </button>
+                </div>
+            </div>
+            <div class="h-6"></div>
+        </div>
+    </div>
+
+    <!-- モーダル群 -->
+    <div id="confirmModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+        <div class="bg-gray-800 rounded-2xl p-6 max-w-sm w-full border border-gray-700">
+            <h3 class="text-lg font-bold text-white mb-2" id="modalTitle">確認</h3>
+            <p class="text-gray-300 text-sm mb-6" id="modalMessage">メッセージ</p>
+            <div class="flex space-x-3">
+                <button id="modalCancelBtn" class="flex-1 bg-gray-700 py-2.5 rounded-xl text-white">キャンセル</button>
+                <button id="modalConfirmBtn" class="flex-1 bg-red-600 py-2.5 rounded-xl font-bold text-white">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="templateModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+        <div class="bg-gray-800 rounded-2xl p-6 max-w-sm w-full border border-gray-700">
+            <h3 class="text-lg font-bold text-white mb-4 flex items-center">
+                <svg class="w-5 h-5 mr-2 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                フォーマットを選択
+            </h3>
+            <div class="space-y-3">
+                <button onclick="selectTemplate('general')" class="w-full bg-gray-700 hover:bg-gray-600 border border-transparent hover:border-indigo-500 text-left px-4 py-3 rounded-xl transition flex items-center group">
+                    <span class="text-2xl mr-3 group-hover:scale-110 transition-transform">📝</span>
+                    <div><div class="text-white font-medium">汎用フォーマット</div><div class="text-gray-400 text-xs">標準的なスタイル</div></div>
+                </button>
+                <button onclick="selectTemplate('internal')" class="w-full bg-gray-700 hover:bg-gray-600 border border-transparent hover:border-indigo-500 text-left px-4 py-3 rounded-xl transition flex items-center group">
+                    <span class="text-2xl mr-3 group-hover:scale-110 transition-transform">🏢</span>
+                    <div><div class="text-white font-medium">社内会議</div><div class="text-gray-400 text-xs">決定事項とTODO中心</div></div>
+                </button>
+                <button onclick="selectTemplate('sales')" class="w-full bg-gray-700 hover:bg-gray-600 border border-transparent hover:border-indigo-500 text-left px-4 py-3 rounded-xl transition flex items-center group">
+                    <span class="text-2xl mr-3 group-hover:scale-110 transition-transform">🤝</span>
+                    <div><div class="text-white font-medium">商談・打ち合わせ</div><div class="text-gray-400 text-xs">課題や提案内容を記録</div></div>
+                </button>
+            </div>
+            <button onclick="closeTemplateModal()" class="mt-5 w-full border border-gray-600 text-gray-300 py-3 rounded-xl">キャンセル</button>
+        </div>
+    </div>
+
+    <!-- Gem連携用コピー画面 -->
+    <div id="minutesModal" class="hidden fixed inset-0 z-50 flex flex-col items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+        <div class="bg-gray-800 rounded-2xl w-full max-w-lg h-[80vh] flex flex-col shadow-2xl border border-gray-700 relative overflow-hidden">
+            <div class="flex justify-between items-center p-4 border-b border-gray-700 bg-gray-800 z-10">
+                <h3 class="text-lg font-bold text-white flex items-center">
+                    <svg class="w-5 h-5 mr-2 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                    Gem用プロンプト確認
+                </h3>
+                <button id="closeMinutesBtn" class="text-gray-400 hover:text-white p-1 rounded-full"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+            </div>
+            <div class="flex-1 p-4 overflow-hidden flex flex-col bg-gray-900">
+                <textarea id="minutesTextArea" class="flex-1 w-full bg-transparent text-gray-100 p-2 rounded border-none focus:ring-0 resize-none outline-none font-sans text-sm leading-relaxed"></textarea>
+            </div>
+            <div class="p-4 border-t border-gray-700 flex bg-gray-800 z-10">
+                <!-- Gemへのコピー専用ボタン -->
+                <button id="copyMinutesBtn" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-4 rounded-xl font-bold transition flex justify-center items-center shadow-lg active:scale-95">
+                    <span class="text-xl mr-2">✨</span>
+                    <span>Gem用プロンプトをコピー</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isRecording = false, isPaused = false, timerInterval = null, seconds = 0, currentStream = null;
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition = null, finalTranscriptContent = "";
+        let audioContext = null, analyser = null, microphone = null, animationId = null;
+        const waveBars = document.querySelectorAll('.wave-bar');
+
+        const ui = {
+            startBtn: document.getElementById('startBtn'), recordingControls: document.getElementById('recordingControls'),
+            pauseBtn: document.getElementById('pauseBtn'), stopBtn: document.getElementById('stopBtn'),
+            resetBtn: document.getElementById('resetBtn'), pauseText: document.getElementById('pauseText'),
+            timerDisplay: document.getElementById('timerDisplay'), statusDot: document.getElementById('statusDot'),
+            statusText: document.getElementById('statusText'), modeText: document.getElementById('modeText'),
+            finalText: document.getElementById('finalText'), interimText: document.getElementById('interimText'),
+            placeholderText: document.getElementById('placeholderText'), tagButtons: document.getElementById('tagButtons'),
+            transcriptArea: document.getElementById('transcriptArea'), confirmModal: document.getElementById('confirmModal'),
+            modalCancelBtn: document.getElementById('modalCancelBtn'), modalConfirmBtn: document.getElementById('modalConfirmBtn'),
+            modalTitle: document.getElementById('modalTitle'), modalMessage: document.getElementById('modalMessage'),
+            minutesBtn: document.getElementById('minutesBtn'), templateModal: document.getElementById('templateModal'),
+            minutesModal: document.getElementById('minutesModal'), closeMinutesBtn: document.getElementById('closeMinutesBtn'),
+            minutesTextArea: document.getElementById('minutesTextArea'), copyMinutesBtn: document.getElementById('copyMinutesBtn')
+        };
+
+        function init() {
+            if (!SpeechRecognition) { document.getElementById('unsupportedWarning').classList.remove('hidden'); return; }
+            recognition = new SpeechRecognition();
+            recognition.lang = 'ja-JP'; recognition.continuous = true; recognition.interimResults = true;
+            recognition.onresult = (event) => {
+                if (isPaused) return;
+                let interimTranscript = '', newFinalTranscript = '';
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) newFinalTranscript += event.results[i][0].transcript;
+                    else interimTranscript += event.results[i][0].transcript;
+                }
+                if (newFinalTranscript) { finalTranscriptContent += newFinalTranscript + '\n'; ui.finalText.innerHTML = finalTranscriptContent.replace(/\n/g, '<br>'); }
+                ui.interimText.textContent = interimTranscript;
+                ui.transcriptArea.scrollTop = ui.transcriptArea.scrollHeight;
+            };
+            recognition.onerror = (e) => { if (e.error === 'not-allowed') { showModal("エラー", "マイクが許可されていません。", null); stopRecording(); }};
+            recognition.onend = () => { if (isRecording && !isPaused) try { recognition.start(); } catch(e) {} };
+
+            ui.startBtn.addEventListener('click', startRecording); ui.stopBtn.addEventListener('click', stopRecording);
+            ui.pauseBtn.addEventListener('click', togglePause); ui.resetBtn.addEventListener('click', resetApp);
+            ui.modalCancelBtn.addEventListener('click', closeModal);
+            ui.modalConfirmBtn.addEventListener('click', () => { if (modalConfirmCallback) modalConfirmCallback(); closeModal(); });
+            ui.minutesBtn.addEventListener('click', () => ui.templateModal.classList.remove('hidden'));
+            ui.closeMinutesBtn.addEventListener('click', () => ui.minutesModal.classList.add('hidden'));
+            ui.copyMinutesBtn.addEventListener('click', copyMinutes);
+        }
+
+        async function startRecording() {
+            try {
+                if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioContext.state === 'suspended') await audioContext.resume();
+                currentStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                setupVisualizer(currentStream);
+                
+                isRecording = true; isPaused = false;
+                ui.startBtn.classList.add('hidden'); ui.recordingControls.classList.remove('hidden');
+                ui.resetBtn.classList.add('hidden'); ui.placeholderText.style.display = 'none';
+                ui.tagButtons.classList.remove('opacity-50', 'pointer-events-none');
+                updateStatusUI('recording'); startTimer();
+                try { recognition.start(); } catch(e) {}
+            } catch (err) { showModal("エラー", "マイクの使用を開始できませんでした。", null); }
+        }
+
+        function stopRecording() {
+            isRecording = false; isPaused = false;
+            if (recognition) recognition.stop();
+            if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
+            if (animationId) cancelAnimationFrame(animationId);
+            waveBars.forEach(bar => bar.style.height = '4px');
+            stopTimer(); ui.recordingControls.classList.add('hidden');
+            ui.tagButtons.classList.add('opacity-50', 'pointer-events-none'); ui.interimText.textContent = '';
+            updateStatusUI('stopped');
+        }
+
+        function togglePause() {
+            if (!isRecording) return;
+            isPaused = !isPaused;
+            if (isPaused) {
+                recognition.stop(); updateStatusUI('paused'); ui.pauseText.textContent = "再開";
+                ui.pauseBtn.classList.replace('bg-gray-700', 'bg-indigo-600');
+                if (animationId) cancelAnimationFrame(animationId); waveBars.forEach(bar => bar.style.height = '4px');
+            } else {
+                try { recognition.start(); } catch(e){}
+                updateStatusUI('recording'); ui.pauseText.textContent = "一時停止";
+                ui.pauseBtn.classList.replace('bg-indigo-600', 'bg-gray-700'); drawVisualizer();
+            }
+        }
+
+        let modalConfirmCallback = null;
+        function showModal(title, msg, onConfirm) { ui.modalTitle.textContent = title; ui.modalMessage.textContent = msg; modalConfirmCallback = onConfirm; ui.confirmModal.classList.remove('hidden'); }
+        function closeModal() { ui.confirmModal.classList.add('hidden'); modalConfirmCallback = null; }
+        function resetApp() { showModal("削除確認", "リセットしますか？", () => { seconds = 0; ui.timerDisplay.textContent = "00:00"; finalTranscriptContent = ""; ui.finalText.innerHTML = ""; ui.interimText.textContent = ""; ui.placeholderText.style.display = 'block'; updateStatusUI('idle'); }); }
+
+        window.insertTag = function(tag) {
+            if (!isRecording || isPaused) return;
+            finalTranscriptContent += `<br><span class="text-indigo-400 font-bold">${tag}</span> `;
+            ui.finalText.innerHTML = finalTranscriptContent.replace(/\n/g, '<br>');
+            ui.transcriptArea.scrollTop = ui.transcriptArea.scrollHeight;
+        };
+
+        window.closeTemplateModal = () => ui.templateModal.classList.add('hidden');
+        window.selectTemplate = (type) => {
+            ui.templateModal.classList.add('hidden');
+            let tmp = document.createElement("DIV"); tmp.innerHTML = finalTranscriptContent.replace(/<br>/gi, '\n');
+            let pt = tmp.textContent || tmp.innerText || ""; pt = pt.replace(/\n{3,}/g, '\n\n').trim();
+            if (!pt) pt = "（データなし）";
+            let tpl = "";
+            if (type === 'internal') tpl = "【社内会議 議事録】\n■ アジェンダ:\n■ 決定事項:\n■ TODO:\n";
+            else if (type === 'sales') tpl = "【商談議事録】\n■ 顧客の課題:\n■ 提案内容:\n■ ネクストアクション:\n";
+            else tpl = "【汎用議事録】\n■ 決定事項・TODO:\n";
+            ui.minutesTextArea.value = `${tpl}\n========================\n【文字起こしデータ】\n${pt}\n========================\n※このテキストをGeminiに送信してください。`;
+            ui.minutesModal.classList.remove('hidden');
+        };
+
+        function copyMinutes() {
+            ui.minutesTextArea.select();
+            try {
+                document.execCommand('copy');
+                const org = ui.copyMinutesBtn.innerHTML;
+                ui.copyMinutesBtn.innerHTML = '<span class="text-xl mr-2">✅</span><span>コピー完了！Gemへペースト</span>';
+                ui.copyMinutesBtn.classList.replace('bg-indigo-600', 'bg-emerald-600');
+                setTimeout(() => { ui.copyMinutesBtn.innerHTML = org; ui.copyMinutesBtn.classList.replace('bg-emerald-600', 'bg-indigo-600'); }, 2000);
+            } catch (err) { alert('コピー失敗'); }
+            window.getSelection().removeAllRanges();
+        }
+
+        function updateStatusUI(state) {
+            ui.statusDot.className = "w-2 h-2 rounded-full mr-2";
+            if (state === 'recording') { ui.statusDot.classList.add('bg-red-500', 'recording-dot'); ui.statusText.textContent = "録音中"; ui.statusText.classList.replace('text-gray-400', 'text-red-400'); ui.modeText.textContent = "文字起こし中"; ui.resetBtn.classList.add('hidden'); ui.minutesBtn.classList.add('hidden'); }
+            else if (state === 'paused') { ui.statusDot.classList.add('bg-yellow-500'); ui.statusText.textContent = "一時停止中"; ui.statusText.classList.replace('text-red-400', 'text-yellow-400'); }
+            else if (state === 'stopped') { ui.statusDot.classList.add('bg-emerald-500'); ui.statusText.textContent = "完了"; ui.statusText.className="text-emerald-400 text-xs font-medium"; ui.modeText.textContent = "録音完了"; ui.resetBtn.classList.remove('hidden'); ui.startBtn.classList.add('hidden'); ui.minutesBtn.classList.remove('hidden'); }
+            else { ui.statusDot.classList.add('bg-gray-500'); ui.statusText.textContent = "待機中"; ui.statusText.className="text-gray-400 text-xs font-medium"; ui.modeText.textContent = "準備完了"; ui.resetBtn.classList.add('hidden'); ui.startBtn.classList.remove('hidden'); ui.minutesBtn.classList.add('hidden'); }
+        }
+
+        function startTimer() { timerInterval = setInterval(() => { if (!isPaused) { seconds++; ui.timerDisplay.textContent = `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`; } }, 1000); }
+        function stopTimer() { clearInterval(timerInterval); }
+        function setupVisualizer(stream) { analyser = audioContext.createAnalyser(); analyser.fftSize = 64; microphone = audioContext.createMediaStreamSource(stream); microphone.connect(analyser); drawVisualizer(); }
+        function drawVisualizer() {
+            if (!isRecording || isPaused) return;
+            animationId = requestAnimationFrame(drawVisualizer);
+            const data = new Uint8Array(analyser.frequencyBinCount); analyser.getByteFrequencyData(data);
+            const step = Math.floor(analyser.frequencyBinCount / waveBars.length);
+            waveBars.forEach((bar, i) => {
+                let v = 0; for(let j=0; j<step; j++) v += data[(i*step)+j]; v /= step;
+                bar.style.height = `${Math.max(4, (v/255)*50)}px`;
+            });
+        }
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
