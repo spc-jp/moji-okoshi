@@ -265,37 +265,40 @@
             ui.copyMinutesBtn.addEventListener('click', copyMinutes);
         }
 
-        async function startRecording() {
+        // iPhoneのSafariでもブロックされにくいように、非同期処理を分離した同期関数に変更
+        function startRecording() {
             try {
-                // UI状態を更新 (ユーザー操作からすぐに実行)
                 isRecording = true; isPaused = false;
                 ui.startBtn.classList.add('hidden'); ui.recordingControls.classList.remove('hidden');
                 ui.resetBtn.classList.add('hidden'); ui.placeholderText.style.display = 'none';
                 ui.tagButtons.classList.remove('opacity-50', 'pointer-events-none');
                 updateStatusUI('recording'); startTimer();
                 
-                // 音声認識を直ちに開始
+                // ボタンクリック時に即座に(同期的に)開始を呼び出す
                 try { recognition.start(); } catch(e) { console.warn("Recognition start warning:", e); }
 
-                // iOS以外の場合のみ、実際の音声ストリームから波形を描画する
                 if (!isIOS) {
-                    try {
-                        if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                        if (audioContext.state === 'suspended') await audioContext.resume();
-                        currentStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                        setupVisualizer(currentStream);
-                    } catch (err) {
-                        console.warn("Visualizer fallback due to error:", err);
-                        startDummyVisualizer(); // 取得に失敗した場合はダミーアニメーション
-                    }
+                    setupRealVisualizer();
                 } else {
-                    // iOSの場合はマイク競合によるエラーを防ぐためダミーアニメーションを使用
                     startDummyVisualizer();
                 }
             } catch (err) { 
                 console.error(err);
-                showModal("エラー", "マイクの起動に失敗しました。iPhoneの「設定」>「Safari」>「マイク」をご確認ください。", null);
+                showModal("エラー", "マイクが起動しませんでした。", null);
                 stopRecording();
+            }
+        }
+
+        // 実際の音声波形を取得する非同期処理（iOS以外で使用）
+        async function setupRealVisualizer() {
+            try {
+                if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioContext.state === 'suspended') await audioContext.resume();
+                currentStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                setupVisualizer(currentStream);
+            } catch (err) {
+                console.warn("Visualizer fallback due to error:", err);
+                startDummyVisualizer();
             }
         }
 
