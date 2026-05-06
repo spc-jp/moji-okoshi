@@ -207,10 +207,13 @@
     </div>
 
     <script>
+        // iOSかどうかを判定するフラグ
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        
         let isRecording = false, isPaused = false, timerInterval = null, seconds = 0, currentStream = null;
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         let recognition = null, finalTranscriptContent = "";
-        let audioContext = null, analyser = null, microphone = null, animationId = null;
+        let audioContext = null, analyser = null, microphone = null, animationId = null, dummyAnimationId = null;
         const waveBars = document.querySelectorAll('.wave-bar');
 
         const ui = {
@@ -244,7 +247,13 @@
                 ui.interimText.textContent = interimTranscript;
                 ui.transcriptArea.scrollTop = ui.transcriptArea.scrollHeight;
             };
-            recognition.onerror = (e) => { if (e.error === 'not-allowed') { showModal("エラー", "マイクが許可されていません。", null); stopRecording(); }};
+            recognition.onerror = (e) => { 
+                console.error("Speech Recognition Error:", e);
+                if (e.error === 'not-allowed') { 
+                    showModal("マイク許可エラー", "iPhoneの設定 > Safari > マイクへのアクセスが「許可」になっているか確認してください。", null); 
+                    stopRecording(); 
+                }
+            };
             recognition.onend = () => { if (isRecording && !isPaused) try { recognition.start(); } catch(e) {} };
 
             ui.startBtn.addEventListener('click', startRecording); ui.stopBtn.addEventListener('click', stopRecording);
@@ -258,18 +267,36 @@
 
         async function startRecording() {
             try {
-                if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                if (audioContext.state === 'suspended') await audioContext.resume();
-                currentStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                setupVisualizer(currentStream);
-                
+                // UI状態を更新 (ユーザー操作からすぐに実行)
                 isRecording = true; isPaused = false;
                 ui.startBtn.classList.add('hidden'); ui.recordingControls.classList.remove('hidden');
                 ui.resetBtn.classList.add('hidden'); ui.placeholderText.style.display = 'none';
                 ui.tagButtons.classList.remove('opacity-50', 'pointer-events-none');
                 updateStatusUI('recording'); startTimer();
-                try { recognition.start(); } catch(e) {}
-            } catch (err) { showModal("エラー", "マイクの使用を開始できませんでした。", null); }
+                
+                // 音声認識を直ちに開始
+                try { recognition.start(); } catch(e) { console.warn("Recognition start warning:", e); }
+
+                // iOS以外の場合のみ、実際の音声ストリームから波形を描画する
+                if (!isIOS) {
+                    try {
+                        if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                        if (audioContext.state === 'suspended') await audioContext.resume();
+                        currentStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                        setupVisualizer(currentStream);
+                    } catch (err) {
+                        console.warn("Visualizer fallback due to error:", err);
+                        startDummyVisualizer(); // 取得に失敗した場合はダミーアニメーション
+                    }
+                } else {
+                    // iOSの場合はマイク競合によるエラーを防ぐためダミーアニメーションを使用
+                    startDummyVisualizer();
+                }
+            } catch (err) { 
+                console.error(err);
+                showModal("エラー", "マイクの起動に失敗しました。iPhoneの「設定」>「Safari」>「マイク」をご確認ください。", null);
+                stopRecording();
+            }
         }
 
         function stopRecording() {
@@ -277,6 +304,7 @@
             if (recognition) recognition.stop();
             if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
             if (animationId) cancelAnimationFrame(animationId);
+            if (dummyAnimationId) clearTimeout(dummyAnimationId);
             waveBars.forEach(bar => bar.style.height = '4px');
             stopTimer(); ui.recordingControls.classList.add('hidden');
             ui.tagButtons.classList.add('opacity-50', 'pointer-events-none'); ui.interimText.textContent = '';
@@ -289,12 +317,30 @@
             if (isPaused) {
                 recognition.stop(); updateStatusUI('paused'); ui.pauseText.textContent = "再開";
                 ui.pauseBtn.classList.replace('bg-gray-700', 'bg-indigo-600');
-                if (animationId) cancelAnimationFrame(animationId); waveBars.forEach(bar => bar.style.height = '4px');
+                if (animationId) cancelAnimationFrame(animationId); 
+                if (dummyAnimationId) clearTimeout(dummyAnimationId);
+                waveBars.forEach(bar => bar.style.height = '4px');
             } else {
                 try { recognition.start(); } catch(e){}
                 updateStatusUI('recording'); ui.pauseText.textContent = "一時停止";
-                ui.pauseBtn.classList.replace('bg-indigo-600', 'bg-gray-700'); drawVisualizer();
+                ui.pauseBtn.classList.replace('bg-indigo-600', 'bg-gray-700'); 
+                if (!isIOS && currentStream) {
+                    drawVisualizer();
+                } else {
+                    startDummyVisualizer();
+                }
             }
+        }
+
+        // iOS用のダミー波形アニメーション
+        function startDummyVisualizer() {
+            if (!isRecording || isPaused) return;
+            waveBars.forEach(bar => {
+                const height = Math.max(4, Math.random() * 40 + 5);
+                bar.style.height = `${height}px`;
+                bar.style.backgroundColor = height > 25 ? '#34d399' : '#10b981';
+            });
+            dummyAnimationId = setTimeout(startDummyVisualizer, 100);
         }
 
         let modalConfirmCallback = null;
